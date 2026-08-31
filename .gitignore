@@ -1,2 +1,10 @@
-.tflint.d/
 .env
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+.tflint.d/
+__pycache__/
+*.pyc
+.pytest_cache/
+eval/results/*.csv
