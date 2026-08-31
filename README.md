@@ -99,4 +99,5 @@ tests/
   test_llm_checks_eval.py              — Iteration 2 (plumbing, not judgment quality)
   test_hitl_interrupt.py               — Iteration 3 (the core safety claim)
   test_fault_injection.py              — Iteration 3 (failure-handling policy)
+  
 ```
