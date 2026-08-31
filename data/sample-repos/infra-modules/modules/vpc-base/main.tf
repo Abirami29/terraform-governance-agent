@@ -1,5 +1,3 @@
-# NEGATIVE CASE (golden-set): this module is clean.
-# Used to confirm security_check does NOT over-flag well-configured resources.
 terraform {
   required_version = ">= 1.5.0"
   required_providers {

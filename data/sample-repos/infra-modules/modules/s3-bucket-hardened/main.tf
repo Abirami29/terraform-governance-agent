@@ -1,9 +1,3 @@
-# DEDICATED NEGATIVE CASE for security_check — built specifically to
-# have zero real findings, unlike s3-bucket-standard/rds-postgres
-# which were designed to test other things (duplication, version
-# drift) and turned out to have real, legitimate but unplanned
-# security findings when actually checked. This module exists only
-# to be the "nothing to see here" baseline.
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
