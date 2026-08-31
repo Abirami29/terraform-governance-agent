@@ -3,8 +3,6 @@ resource "aws_security_group" "web" {
   description = "Security group for web tier"
   vpc_id      = var.vpc_id
 
-  # PLANTED ISSUE (golden-set positive case for security_check):
-  # ingress open to the world on SSH — this should be flagged High severity
   ingress {
     from_port   = 22
     to_port     = 22

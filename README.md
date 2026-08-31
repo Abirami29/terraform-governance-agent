@@ -1,103 +1,123 @@
-# Terraform Governance Agent — Test Suite
+# Terraform Governance Agent
 
-This repo's tests are split into two categories on purpose, because
-they answer two different questions.
+An agent that audits a Terraform module ecosystem across multiple
+repos, using deterministic checks where the answer is a fact and LLM
+judgment only where the answer requires genuine reasoning — with a
+human approval gate before anything gets written to disk.
 
-## The two kinds of "test" in this repo
+## One-liner
 
-**1. `tests/` — pytest, plain pass/fail, run on every change.**
-These cover everything deterministic: graph queries, `terraform
-validate`, diff scoping, and the *mechanics* of the human-approval
-gate and the fault-tolerance policy. There's no ambiguity in a
-correct answer here — a module either has zero consumers or it
-doesn't. If one of these fails, the code is wrong; fix the code, not
-the test.
+This agent helps a platform engineer audit their shared Terraform
+module ecosystem across 4 repos, replacing manual grep-and-tribal-
+knowledge checks. It runs drift, orphan-module, deletion-protection,
+security, and duplication checks on its own using deterministic graph
+queries plus LLM analysis, hands off to a human before any file is
+written, and I'll know it works when a platform engineer gets a
+trustworthy cross-repo audit report in one run instead of manually
+checking each repo by hand.
 
-**2. `eval/run_eval.py` — not pytest, run manually, produces a report.**
-This covers the two LLM-judgment checks (`security_check`,
-`duplicate_check`). These don't have a single unambiguous right
-answer the way a graph query does — they're judgment calls, so they
-get evaluated against a human-labeled golden dataset
-(`eval/golden_sets/*.csv`) and the output is a **CSV report you read
-by hand**, not a boolean. This follows the eval-driven development
-process: golden dataset → run → distill to pass/fail per row → read
-every failure and write down why → only then consider an LLM-judge
-layer if you want to scale past manual reading.
+## What's actually built (verified, not just claimed)
 
-Do not try to make the LLM-judgment checks pass a pytest assert
-directly against "the LLM said the right thing" — that's exactly the
-kind of test that gives false confidence, because a single run of a
-non-deterministic model proves nothing about the next run.
+**Deterministic checks — no LLM, no ambiguity:**
+- Version drift across repos (`src/deterministic/graph_queries.py`)
+- Orphaned modules with zero consumers (same file)
+- Blast-radius lookup (which repos consume a given module)
+- Syntax/validity via `terraform validate` (`terraform_validate.py`)
+- Deprecated arguments/instance types via `tflint` + the
+  `tflint-ruleset-aws` plugin (`tflint_check.py`)
+- Missing deletion protection (`deletion_protection_check.py`) —
+  moved here from an LLM prompt after 3 consecutive eval runs showed
+  the LLM didn't reliably catch it; a fixed presence/value check
+  belongs in the deterministic layer, not the LLM layer
 
-## Running the deterministic suite
+**LLM-judgment checks — only where genuine reasoning is needed:**
+- `security_check` — context-dependent security risk (open network
+  access, missing encryption, missing public-access blocking)
+- `duplicate_check` — whether two modules serve a substantially
+  similar purpose
+
+Both were verified against a human-labeled golden dataset
+(`eval/golden_sets/`), run 3x each for consistency before being
+trusted — one real reliability problem was found and fixed this way
+(see "What went wrong" below), and one real bug was found where
+LLM-facing sample data accidentally contained comments describing the
+expected test answer, contaminating the results; that was found,
+fixed, and every check re-verified clean afterward.
+
+**Orchestrator (`src/orchestrator/graph.py`):** a LangGraph state
+graph that fans out to all the above, merges results into one report,
+and — critically — pauses at a real `interrupt()` for human approval
+before anything is written. Both branches are independently verified
+on disk, not just from printed output: **reject** leaves the
+filesystem completely untouched; **approve** writes exactly what was
+shown at the review prompt, no silent changes in between.
+
+**Diff-scoping:** only changed `.tf` files get re-checked, not the
+whole repo every run — proven working against real git history
+across genuinely separate sample repos (`infra-modules`,
+`service-webshop`, `service-billing`, `service-analytics` are each
+their own git repo, matching the real multi-repo shape this project
+represents).
+
+## What's deliberately NOT built yet
+
+See `NEXT_ITERATION.md` for the full list and honest time estimates:
+doc-drift check + `draft_doc_update`, the on-demand provider-upgrade
+feature, an AWS-account-backed live demo, and a `checkov`/`tfsec`
+deterministic security layer.
+
+## What went wrong, and what that shows
+
+Two real problems were found and fixed during development, not
+smoothed over:
+
+1. **A deletion-protection finding (`skip_final_snapshot=true`) was
+   asked of the LLM `security_check` and failed 3 consecutive
+   golden-set runs (0/3).** Rather than keep tuning the prompt, this
+   was recognized as a fixed presence/value check that belongs in the
+   deterministic layer — moved there, and it's been 100% reliable
+   since, at zero LLM cost.
+2. **Sample `.tf` files originally contained explanatory comments
+   describing what each planted test case was for** (e.g. "this
+   should be flagged as a duplicate"). The LLM was reading those
+   comments as part of the resource text and echoing them back as
+   findings — contaminating every golden-set result up to that point.
+   Found via manual inspection of a real orchestrator run, fixed by
+   moving all test-case documentation into `NOTES.md` (never read by
+   any check), and every check re-verified 3x clean afterward.
+
+Both are documented here deliberately — the point of eval-driven
+development is catching exactly this kind of thing before it ships,
+not pretending every run passed on the first try.
+
+## Running it
 
 ```bash
 pip install -r requirements.txt
-pytest tests/ -v
-```
-
-Some tests are skipped automatically if a tool isn't installed
-(`terraform validate` tests skip if the `terraform` CLI isn't on
-PATH — check the skip count in the summary, don't assume "0 failed"
-means everything ran).
-
-## Running the eval report
-
-Wire a real LLM client into `src/llm_checks/security_check.py`'s
-`_call_llm()` first — it raises `NotImplementedError` by default so
-nothing accidentally makes a network call during normal `pytest`
-runs.
-
-```bash
-python eval/run_eval.py security_check
+pytest tests/ -v                          # deterministic + plumbing tests
+python eval/run_eval.py security_check    # LLM judgment eval
 python eval/run_eval.py duplicate_check
+python scripts/run_audit.py               # full orchestrator, real HITL prompt
 ```
 
-Output lands in `eval/results/<check>_<timestamp>.csv`. Read the
-failed rows. If a row fails and the LLM's stated reasoning actually
-looks right to you on inspection, the golden-set label might be
-wrong, not the check — golden sets are living documents, update them
-when you're confident the original label was the mistake.
-
-## What's planted in the sample data (`data/sample-repos/`)
-
-This mirrors the "bake in intentional inconsistencies" pattern —
-every check has at least one known positive case and one known
-negative case in the data, not just positive cases, so tests catch
-over-flagging as well as under-flagging.
-
-| Planted issue | Where | Which check catches it |
-|---|---|---|
-| Orphan module (0 consumers) | `sqs-queue` | `find_unused_modules` |
-| Version drift (v1.0.0 vs v1.2.0) | `rds-postgres` | `find_version_drift` |
-| Open security group (0.0.0.0/0 on :22) | `security-group-web` | `security_check` (LLM) + should also be caught by `tflint`/`checkov` (deterministic, not yet wired) |
-| Duplicate-purpose modules | `s3-bucket-standard` / `s3-bucket-legacy` | `duplicate_check` (LLM) |
-| Stale doc comment (claims encryption disabled, resource has it enabled) | `rds-postgres` README/comment | doc-drift check (not yet implemented in this scaffold) |
-| Clean/negative case | `vpc-base` | used as the "don't over-flag this" case across multiple checks |
-
-If you add a new planted issue, add it to this table — it's the
-single source of truth for "what should this audit actually catch,"
-which doubles as documentation for your project write-up's "how do I
-know it works" section.
+See `.env.example` for required environment variables (Nebius API
+credentials).
 
 ## Directory structure
 
 ```
 src/
-  deterministic/     — graph queries, no LLM, no ambiguity
-  diffing/           — git diff scoping (only re-check what changed)
-  llm_checks/        — security_check, duplicate_check (LLM judgment)
-  orchestrator/       — LangGraph wiring (not yet implemented in this scaffold)
+  deterministic/     — graph queries, terraform validate, tflint, deletion-protection
+  diffing/           — git diff scoping
+  llm_checks/        — security_check, duplicate_check
+  llm/               — Nebius client wrapper
+  orchestrator/      — LangGraph graph: fan-out, merge, HITL interrupt
 eval/
   golden_sets/       — human-labeled expected output per LLM check
   run_eval.py        — runs a check against its golden set, writes a report
-  results/           — timestamped CSV reports land here (gitignored)
-tests/
-  test_deterministic_graph_queries.py  — Iteration 1
-  test_terraform_validate.py           — Iteration 1
-  test_git_diff_scoping.py             — Iteration 1
-  test_llm_checks_eval.py              — Iteration 2 (plumbing, not judgment quality)
-  test_hitl_interrupt.py               — Iteration 3 (the core safety claim)
-  test_fault_injection.py              — Iteration 3 (failure-handling policy)
-  
+data/sample-repos/   — 4 independent git repos with deliberately planted
+                        issues (see NOTES.md inside for what's planted where)
+tests/               — pytest suite, one docstring per test explaining
+                        what/why/pass/fail
+NEXT_ITERATION.md    — deferred work, with honest time estimates
 ```
