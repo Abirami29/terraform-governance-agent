@@ -8,3 +8,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 eval/results/*.csv
+data/aws-demo/.terraform/
+data/aws-demo/*.tfstate*
+data/aws-demo/tfplan
+data/aws-demo/.terraform.lock.hcl

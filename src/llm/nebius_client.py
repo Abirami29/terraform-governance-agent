@@ -18,9 +18,8 @@ def get_llm(temperature: float = 0.0, max_tokens: int = 1024, reasoning_effort: 
         api_key=os.environ["NEBIUS_API_KEY"],
         model=os.environ["NEBIUS_MODEL"],
         temperature=temperature,
-        max_tokens=max_tokens,
         frequency_penalty=frequency_penalty,
-        extra_body={"reasoning_effort": reasoning_effort},
+        extra_body={"reasoning_effort": reasoning_effort, "max_tokens": max_tokens},
     )
 
 
